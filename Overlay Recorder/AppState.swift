@@ -20,13 +20,13 @@ class AppState: ObservableObject {
     @Published var pipMask: PiPMask = .fill
     @Published var audioSource: AudioSource {
         didSet {
-            let sharedDefaults = UserDefaults(suiteName: "group.amrit.dash.Overlay-Recorder")
+            let sharedDefaults = UserDefaults(suiteName: AppGroupHelper.appGroupID)
             sharedDefaults?.set(audioSource.rawValue, forKey: "audioSource")
         }
     }
     
     init() {
-        let sharedDefaults = UserDefaults(suiteName: "group.amrit.dash.Overlay-Recorder")
+        let sharedDefaults = UserDefaults(suiteName: AppGroupHelper.appGroupID)
         let savedAudio = sharedDefaults?.string(forKey: "audioSource") ?? AudioSource.micAudio.rawValue
         self.audioSource = AudioSource(rawValue: savedAudio) ?? .micAudio
     }
@@ -71,5 +71,44 @@ class AppState: ObservableObject {
         case circle = "Circle"
         case fill = "Fill (Rectangle)"
         var id: String { rawValue }
+    }
+}
+
+struct AppGroupHelper {
+    static var appGroupID: String {
+        // Attempt to read embedded.mobileprovision to extract the actual App Group dynamically
+        if let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+           let provisionData = try? Data(contentsOf: provisionURL),
+           let provisionString = String(data: provisionData, encoding: .ascii) ?? String(data: provisionData, encoding: .isoLatin1) {
+            
+            if let startRange = provisionString.range(of: "<plist"),
+               let endRange = provisionString.range(of: "</plist>") {
+                let plistString = String(provisionString[startRange.lowerBound...endRange.upperBound])
+                if let plistData = plistString.data(using: .utf8),
+                   let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+                   let entitlements = plist["Entitlements"] as? [String: Any],
+                   let appGroups = entitlements["com.apple.security.application-groups"] as? [String],
+                   let firstGroup = appGroups.first {
+                    return firstGroup
+                }
+            }
+        }
+        
+        // Fallback: try derived bundle IDs
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let mainAppBundleID: String
+        if bundleID.hasSuffix(".OverlayBroadcastExtension") {
+            mainAppBundleID = String(bundleID.dropLast(".OverlayBroadcastExtension".count))
+        } else {
+            mainAppBundleID = bundleID
+        }
+        
+        let dynamicGroup = "group.\(mainAppBundleID)"
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: dynamicGroup) != nil {
+            return dynamicGroup
+        }
+        
+        // Fallback: hardcoded
+        return "group.amrit.dash.Overlay-Recorder"
     }
 }

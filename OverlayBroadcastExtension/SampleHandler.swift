@@ -15,11 +15,11 @@ class SampleHandler: RPBroadcastSampleHandler {
     private var audioSource: String = "Microphone Only"
     
     override func broadcastStarted(withSetupInfo setupInfo: [String : NSObject]?) {
-        let sharedDefaults = UserDefaults(suiteName: "group.amrit.dash.Overlay-Recorder")
+        let groupID = AppGroupHelper.appGroupID
+        let sharedDefaults = UserDefaults(suiteName: groupID)
         audioSource = sharedDefaults?.string(forKey: "audioSource") ?? "Microphone Only"
         
         // User has requested to start the broadcast. Setup info from the UI extension can be supplied but optional.
-        let groupID = "group.amrit.dash.Overlay-Recorder"
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) else {
             print("No app group found")
             return
@@ -207,5 +207,41 @@ class SampleHandler: RPBroadcastSampleHandler {
         } else {
             audioMicInput = nil
         }
+    }
+}
+
+struct AppGroupHelper {
+    static var appGroupID: String {
+        if let provisionURL = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+           let provisionData = try? Data(contentsOf: provisionURL),
+           let provisionString = String(data: provisionData, encoding: .ascii) ?? String(data: provisionData, encoding: .isoLatin1) {
+            
+            if let startRange = provisionString.range(of: "<plist"),
+               let endRange = provisionString.range(of: "</plist>") {
+                let plistString = String(provisionString[startRange.lowerBound...endRange.upperBound])
+                if let plistData = plistString.data(using: .utf8),
+                   let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+                   let entitlements = plist["Entitlements"] as? [String: Any],
+                   let appGroups = entitlements["com.apple.security.application-groups"] as? [String],
+                   let firstGroup = appGroups.first {
+                    return firstGroup
+                }
+            }
+        }
+        
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        let mainAppBundleID: String
+        if bundleID.hasSuffix(".OverlayBroadcastExtension") {
+            mainAppBundleID = String(bundleID.dropLast(".OverlayBroadcastExtension".count))
+        } else {
+            mainAppBundleID = bundleID
+        }
+        
+        let dynamicGroup = "group.\(mainAppBundleID)"
+        if FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: dynamicGroup) != nil {
+            return dynamicGroup
+        }
+        
+        return "group.amrit.dash.Overlay-Recorder"
     }
 }

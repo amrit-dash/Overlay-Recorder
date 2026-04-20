@@ -16,7 +16,7 @@ struct ContentView: View {
     
 
     private func saveRecordingsFromExtension() {
-        let groupID = "group.amrit.dash.Overlay-Recorder"
+        let groupID = AppGroupHelper.appGroupID
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) else { return }
         let recordingsDir = containerURL.appendingPathComponent("Recordings", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(at: recordingsDir, includingPropertiesForKeys: nil) else { return }
@@ -110,7 +110,7 @@ struct SidebarView: View {
     
 
     private func saveRecordingsFromExtension() {
-        let groupID = "group.amrit.dash.Overlay-Recorder"
+        let groupID = AppGroupHelper.appGroupID
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) else { return }
         let recordingsDir = containerURL.appendingPathComponent("Recordings", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(at: recordingsDir, includingPropertiesForKeys: nil) else { return }
@@ -227,7 +227,7 @@ struct MainActionView: View {
     
     func triggerSystemScreenRecording() {
         let picker = RPSystemBroadcastPickerView(frame: .zero)
-        picker.preferredExtension = "amrit.dash.Overlay-Recorder.OverlayBroadcastExtension"
+        picker.preferredExtension = Bundle.main.bundleIdentifier! + ".OverlayBroadcastExtension"
         picker.showsMicrophoneButton = true
         if let button = picker.subviews.first(where: { $0 is UIButton }) as? UIButton {
             button.sendActions(for: .allTouchEvents)
@@ -237,7 +237,7 @@ struct MainActionView: View {
     
 
     private func saveRecordingsFromExtension() {
-        let groupID = "group.amrit.dash.Overlay-Recorder"
+        let groupID = AppGroupHelper.appGroupID
         guard let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupID) else { return }
         let recordingsDir = containerURL.appendingPathComponent("Recordings", isDirectory: true)
         guard let files = try? FileManager.default.contentsOfDirectory(at: recordingsDir, includingPropertiesForKeys: nil) else { return }

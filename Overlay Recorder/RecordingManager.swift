@@ -221,7 +221,7 @@ class RecordingManager: ObservableObject {
             AVEncoderBitRateKey: 128000
         ]
         
-        let sharedDefaults = UserDefaults(suiteName: "group.amrit.dash.Overlay-Recorder")
+        let sharedDefaults = UserDefaults(suiteName: AppGroupHelper.appGroupID)
         let audioSource = sharedDefaults?.string(forKey: "audioSource") ?? "Microphone Only"
         
         if audioSource == "App Audio Only" || audioSource == "Both (App & Mic)" {
