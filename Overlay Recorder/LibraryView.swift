@@ -1,3 +1,5 @@
+import Combine
+
 import SwiftUI
 import Photos
 import AVKit
@@ -104,6 +106,9 @@ struct LibraryView: View {
         }
         .background(Color(UIColor.systemGroupedBackground).edgesIgnoringSafeArea(.all))
         .onAppear(perform: loadRecordings)
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("com.amrit.dash.Overlay-Recorder.recordingsUpdated"))) { _ in
+            loadRecordings()
+        }
     }
     
     private func deleteSelected() {
@@ -205,6 +210,7 @@ struct RecordingCard: View {
             if let date = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate {
                 self.creationDate = date
             }
+            if self.thumbnail != nil && self.duration > 0 { return }
             Task {
                 let asset = AVURLAsset(url: url)
                 if let dur = try? await asset.load(.duration) {
@@ -238,18 +244,44 @@ struct VideoDetailView: View {
     var onDelete: () -> Void
     
     @State private var player: AVPlayer?
+    @State private var isReadyToPlay = false
     @State private var isShowingEditor = false
     @State private var isSaving = false
     @State private var saveMessage: String?
     @Environment(\.presentationMode) var presentationMode
+    @State private var cancellables = Set<AnyCancellable>()
     
     var body: some View {
         VStack {
-            if let player = player {
-                VideoPlayer(player: player)
-                    .edgesIgnoringSafeArea(.bottom)
-            } else {
-                ProgressView("Loading Video...")
+            ZStack {
+                if let player = player {
+                    VideoPlayer(player: player)
+                        .edgesIgnoringSafeArea(.bottom)
+                        .opacity(isReadyToPlay ? 1.0 : 0.0)
+                }
+                
+                if !isReadyToPlay {
+                    ProgressView("Loading Video...")
+                        .progressViewStyle(CircularProgressViewStyle())
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(Color.black.opacity(0.6))
+                        .cornerRadius(10)
+                }
+                
+                if isSaving {
+                    VStack {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.5)
+                        Text("Saving to Photos...")
+                            .foregroundColor(.white)
+                            .padding(.top, 10)
+                    }
+                    .padding(20)
+                    .background(Color.black.opacity(0.75))
+                    .cornerRadius(12)
+                }
             }
             
             if let message = saveMessage {
@@ -279,11 +311,7 @@ struct VideoDetailView: View {
             }
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button(action: saveToGallery) {
-                    if isSaving {
-                        ProgressView().progressViewStyle(CircularProgressViewStyle())
-                    } else {
-                        Image(systemName: "square.and.arrow.down")
-                    }
+                    Image(systemName: "square.and.arrow.down")
                 }
                 .disabled(isSaving)
                 
@@ -315,8 +343,19 @@ struct VideoDetailView: View {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try? AVAudioSession.sharedInstance().setActive(true)
             #endif
-            self.player = AVPlayer(url: url)
-            self.player?.play()
+            let player = AVPlayer(url: url)
+            self.player = player
+            
+            // Add observer for readyToPlay
+            player.currentItem?.publisher(for: \.status)
+                .filter { $0 == .readyToPlay }
+                .first()
+                .receive(on: RunLoop.main)
+                .sink { _ in
+                    self.isReadyToPlay = true
+                    player.play()
+                }
+                .store(in: &cancellables)
         }
         .onDisappear {
             player?.pause()
@@ -330,67 +369,123 @@ struct VideoDetailView: View {
                 DispatchQueue.main.async {
                     self.saveMessage = "Permission Denied"
                     self.isSaving = false
-                    clearMessage()
+                    self.clearMessage()
                 }
                 return
             }
             
-            let albumName = "Aradhi's Classroom"
-            var assetCollectionPlaceholder: PHObjectPlaceholder?
-            var albumCollection: PHAssetCollection?
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mp4")
             
+            // Step 1: Copy file to temp location to avoid any file locking or permission issues during save
+            do {
+                if FileManager.default.fileExists(atPath: tempURL.path) {
+                    try FileManager.default.removeItem(at: tempURL)
+                }
+                try FileManager.default.copyItem(at: self.url, to: tempURL)
+            } catch {
+                DispatchQueue.main.async {
+                    self.isSaving = false
+                    self.saveMessage = "Failed to copy file"
+                    self.clearMessage()
+                }
+                return
+            }
+            
+            // Step 2: Use UIVideoAtPathIsCompatibleWithSavedPhotosAlbum to verify compatibility
+            if UIVideoAtPathIsCompatibleWithSavedPhotosAlbum(tempURL.path) {
+                // Compatible! We can just save it.
+                self.performSave(fileURL: tempURL, needsCleanup: true)
+            } else {
+                // Not compatible! We must re-encode it so it becomes compatible.
+                // We will overwrite the temp file with the re-encoded version.
+                try? FileManager.default.removeItem(at: tempURL)
+                self.exportAndSave(to: tempURL)
+            }
+        }
+    }
+    
+    private func exportAndSave(to tempURL: URL) {
+        let asset = AVURLAsset(url: self.url)
+        // Force re-encoding to a standard format (Passthrough keeps the original format, which we know is incompatible)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            DispatchQueue.main.async {
+                self.isSaving = false
+                self.saveMessage = "Could not create export session"
+                self.clearMessage()
+            }
+            return
+        }
+        
+        exportSession.outputURL = tempURL
+        exportSession.outputFileType = .mp4
+        exportSession.shouldOptimizeForNetworkUse = true
+        
+        if #available(iOS 18.0, *) {
+            Task {
+                do {
+                    try await exportSession.export(to: tempURL, as: .mp4)
+                    await MainActor.run {
+                        self.performSave(fileURL: tempURL, needsCleanup: true)
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.isSaving = false
+                        self.saveMessage = "Export failed: \(error.localizedDescription)"
+                        self.clearMessage()
+                    }
+                    try? FileManager.default.removeItem(at: tempURL)
+                }
+            }
+        } else {
+            exportSession.exportAsynchronously {
+                if exportSession.status == .completed {
+                    self.performSave(fileURL: tempURL, needsCleanup: true)
+                } else {
+                    DispatchQueue.main.async {
+                        self.isSaving = false
+                        self.saveMessage = "Export failed: \(exportSession.error?.localizedDescription ?? "Unknown error")"
+                        self.clearMessage()
+                    }
+                    try? FileManager.default.removeItem(at: tempURL)
+                }
+            }
+        }
+    }
+    
+    private func performSave(fileURL: URL, needsCleanup: Bool) {
+        let albumName = "Aradhi's Classroom"
+        
+        PHPhotoLibrary.shared().performChanges({
             let fetchOptions = PHFetchOptions()
             fetchOptions.predicate = NSPredicate(format: "title = %@", albumName)
             let collection = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: fetchOptions)
             
+            var albumChangeRequest: PHAssetCollectionChangeRequest?
             if let existingAlbum = collection.firstObject {
-                albumCollection = existingAlbum
+                albumChangeRequest = PHAssetCollectionChangeRequest(for: existingAlbum)
+            } else {
+                albumChangeRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumName)
             }
             
-            PHPhotoLibrary.shared().performChanges({
-                if albumCollection == nil {
-                    let createAlbumRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumName)
-                    assetCollectionPlaceholder = createAlbumRequest.placeholderForCreatedAssetCollection
-                }
-            }) { success, error in
-                if success || albumCollection != nil {
-                    if let placeholder = assetCollectionPlaceholder {
-                        let fetchResult = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [placeholder.localIdentifier], options: nil)
-                        albumCollection = fetchResult.firstObject
-                    }
-                    
-                    if let album = albumCollection {
-                        PHPhotoLibrary.shared().performChanges({
-                            let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-                            if let placeholder = assetChangeRequest?.placeholderForCreatedAsset {
-                                let albumChangeRequest = PHAssetCollectionChangeRequest(for: album)
-                                albumChangeRequest?.addAssets([placeholder] as NSArray)
-                            }
-                        }) { success2, error2 in
-                            DispatchQueue.main.async {
-                                self.isSaving = false
-                                if success2 {
-                                    self.saveMessage = "Saved to Gallery!"
-                                } else {
-                                    self.saveMessage = "Failed to save: \(error2?.localizedDescription ?? "Unknown error")"
-                                }
-                                self.clearMessage()
-                            }
-                        }
-                    } else {
-                        DispatchQueue.main.async {
-                            self.isSaving = false
-                            self.saveMessage = "Failed to find album"
-                            self.clearMessage()
-                        }
-                    }
+            // DO NOT USE shouldMoveFile! It causes permission issues when moving from app sandbox to Photos framework
+            let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: fileURL)
+            
+            if let placeholder = assetChangeRequest?.placeholderForCreatedAsset {
+                albumChangeRequest?.addAssets([placeholder] as NSArray)
+            }
+        }) { success, error in
+            if needsCleanup {
+                try? FileManager.default.removeItem(at: fileURL)
+            }
+            
+            DispatchQueue.main.async {
+                self.isSaving = false
+                if success {
+                    self.saveMessage = "Saved to Gallery!"
                 } else {
-                    DispatchQueue.main.async {
-                        self.isSaving = false
-                        self.saveMessage = "Failed to create album: \(error?.localizedDescription ?? "Unknown")"
-                        self.clearMessage()
-                    }
+                    self.saveMessage = "Failed to save: \(error?.localizedDescription ?? "Unknown error")"
                 }
+                self.clearMessage()
             }
         }
     }

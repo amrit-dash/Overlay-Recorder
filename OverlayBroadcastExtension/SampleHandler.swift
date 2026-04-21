@@ -1,5 +1,6 @@
 import ReplayKit
 import AVFoundation
+import VideoToolbox
 
 class SampleHandler: RPBroadcastSampleHandler {
     
@@ -8,6 +9,7 @@ class SampleHandler: RPBroadcastSampleHandler {
     private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var audioAppInput: AVAssetWriterInput?
     private var audioMicInput: AVAssetWriterInput?
+    private var transferSession: VTPixelTransferSession?
     
     private var isWriterStarted = false
     private var sessionStartTime: CMTime?
@@ -116,7 +118,18 @@ class SampleHandler: RPBroadcastSampleHandler {
             if let videoInput = videoInput, videoInput.isReadyForMoreMediaData {
                 if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer), let adaptor = videoAdaptor {
                     let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-                    adaptor.append(pixelBuffer, withPresentationTime: pts)
+                    if let pool = adaptor.pixelBufferPool, let ts = transferSession {
+                        var dstPixelBuffer: CVPixelBuffer?
+                        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &dstPixelBuffer)
+                        if let dst = dstPixelBuffer {
+                            VTPixelTransferSessionTransferImage(ts, from: pixelBuffer, to: dst)
+                            adaptor.append(dst, withPresentationTime: pts)
+                        } else {
+                            adaptor.append(pixelBuffer, withPresentationTime: pts)
+                        }
+                    } else {
+                        adaptor.append(pixelBuffer, withPresentationTime: pts)
+                    }
                 } else {
                     videoInput.append(sampleBuffer)
                 }
@@ -169,12 +182,21 @@ class SampleHandler: RPBroadcastSampleHandler {
         width = width % 2 == 0 ? width : width + 1
         height = height % 2 == 0 ? height : height + 1
         
+        let codec: AVVideoCodecType
+        if #available(iOS 11.0, *) {
+            codec = (width * height > 1920 * 1080) ? .hevc : .h264
+        } else {
+            codec = .h264
+        }
+        
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoCodecKey: codec,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
             AVVideoScalingModeKey: AVVideoScalingModeResizeAspect
         ]
+        
+        VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &transferSession)
         
         videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoInput?.expectsMediaDataInRealTime = true

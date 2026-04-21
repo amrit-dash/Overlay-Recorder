@@ -30,6 +30,9 @@ struct ContentView: View {
                 try? FileManager.default.removeItem(at: destinationURL)
             }
             try? FileManager.default.moveItem(at: fileURL, to: destinationURL)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: NSNotification.Name("com.amrit.dash.Overlay-Recorder.recordingsUpdated"), object: nil)
+                    }
         }
     }
 
@@ -124,6 +127,9 @@ struct SidebarView: View {
                 try? FileManager.default.removeItem(at: destinationURL)
             }
             try? FileManager.default.moveItem(at: fileURL, to: destinationURL)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: NSNotification.Name("com.amrit.dash.Overlay-Recorder.recordingsUpdated"), object: nil)
+                    }
         }
     }
 
@@ -257,6 +263,9 @@ struct MainActionView: View {
                             try? FileManager.default.removeItem(at: destinationURL)
                         }
                         try? FileManager.default.moveItem(at: finalURL, to: destinationURL)
+                        DispatchQueue.main.async {
+                            NotificationCenter.default.post(name: NSNotification.Name("com.amrit.dash.Overlay-Recorder.recordingsUpdated"), object: nil)
+                        }
                     }
                 } else {
                     let destinationURL = docsDir.appendingPathComponent(fileURL.lastPathComponent)
@@ -264,6 +273,9 @@ struct MainActionView: View {
                         try? FileManager.default.removeItem(at: destinationURL)
                     }
                     try? FileManager.default.moveItem(at: fileURL, to: destinationURL)
+                    DispatchQueue.main.async {
+                        NotificationCenter.default.post(name: NSNotification.Name("com.amrit.dash.Overlay-Recorder.recordingsUpdated"), object: nil)
+                    }
                 }
             }
         }
@@ -280,131 +292,92 @@ struct MainActionView: View {
                     return
                 }
                 
-                let audioOutURL = url.deletingLastPathComponent().appendingPathComponent("temp_audio_\(UUID().uuidString).m4a")
-                if FileManager.default.fileExists(atPath: audioOutURL.path) {
-                    try FileManager.default.removeItem(at: audioOutURL)
-                }
-                
-                let reader = try AVAssetReader(asset: asset)
-                let writer = try AVAssetWriter(outputURL: audioOutURL, fileType: .m4a)
-                
-                let audioMix = AVMutableAudioMix()
+                // Step 1: Mix audio tracks into a single m4a file
+                let audioComp = AVMutableComposition()
                 var inputParameters = [AVMutableAudioMixInputParameters]()
+                
                 for track in audioTracks {
-                    let param = AVMutableAudioMixInputParameters(track: track)
-                    param.setVolume(1.0, at: .zero)
-                    inputParameters.append(param)
-                }
-                audioMix.inputParameters = inputParameters
-                
-                let mixOutput = AVAssetReaderAudioMixOutput(audioTracks: audioTracks, audioSettings: [
-                    AVFormatIDKey: kAudioFormatLinearPCM,
-                    AVSampleRateKey: 44100,
-                    AVNumberOfChannelsKey: 2,
-                    AVLinearPCMBitDepthKey: 16,
-                    AVLinearPCMIsNonInterleaved: false,
-                    AVLinearPCMIsFloatKey: false,
-                    AVLinearPCMIsBigEndianKey: false
-                ])
-                mixOutput.audioMix = audioMix
-                reader.add(mixOutput)
-                
-                let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: 44100,
-                    AVNumberOfChannelsKey: 2,
-                    AVEncoderBitRateKey: 128000
-                ])
-                audioInput.expectsMediaDataInRealTime = false
-                writer.add(audioInput)
-                
-                writer.startWriting()
-                reader.startReading()
-                writer.startSession(atSourceTime: .zero)
-                
-                let audioQueue = DispatchQueue(label: "audioQueue")
-                
-                nonisolated(unsafe) let safeAudioInput = audioInput
-                nonisolated(unsafe) let safeMixOutput = mixOutput
-                nonisolated(unsafe) let safeWriter = writer
-                
-                safeAudioInput.requestMediaDataWhenReady(on: audioQueue) {
-                    while safeAudioInput.isReadyForMoreMediaData {
-                        var sample: CMSampleBuffer?
-                        autoreleasepool {
-                            sample = safeMixOutput.copyNextSampleBuffer()
-                        }
-                        if let sample = sample {
-                            safeAudioInput.append(sample)
-                        } else {
-                            safeAudioInput.markAsFinished()
-                            
-                            DispatchQueue.main.async {
-                                Task {
-                                    await safeWriter.finishWriting()
-                                    
-                                    guard safeWriter.status == .completed else {
-                                        try? FileManager.default.removeItem(at: audioOutURL)
-                                        completion(nil, safeWriter.error)
-                                        return
-                                    }
-                                    
-                                    do {
-                                        let mixedAudioAsset = AVURLAsset(url: audioOutURL)
-                                        guard let mixedAudioTrack = try await mixedAudioAsset.loadTracks(withMediaType: .audio).first else {
-                                            throw NSError(domain: "Mix", code: 2, userInfo: nil)
-                                        }
-                                        
-                                        let composition = AVMutableComposition()
-                                        
-                                        if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
-                                            let compVideo = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-                                            let timeRange = try await videoTrack.load(.timeRange)
-                                            try compVideo?.insertTimeRange(timeRange, of: videoTrack, at: .zero)
-                                        }
-                                        
-                                        let compAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                                        let audioTimeRange = try await mixedAudioTrack.load(.timeRange)
-                                        try compAudio?.insertTimeRange(audioTimeRange, of: mixedAudioTrack, at: .zero)
-                                        
-                                        let finalOutURL = url.deletingLastPathComponent().appendingPathComponent("mixed_" + url.lastPathComponent)
-                                        if FileManager.default.fileExists(atPath: finalOutURL.path) {
-                                            try FileManager.default.removeItem(at: finalOutURL)
-                                        }
-                                        
-                                        guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetPassthrough) else {
-                                            throw NSError(domain: "Export", code: 3, userInfo: nil)
-                                        }
-                                        exportSession.outputURL = finalOutURL
-                                        exportSession.outputFileType = .mp4
-                                        exportSession.shouldOptimizeForNetworkUse = true
-                                        
-                                        if #available(iOS 18.0, *) {
-                                            try await exportSession.export(to: finalOutURL, as: .mp4)
-                                            try? FileManager.default.removeItem(at: audioOutURL)
-                                            try? FileManager.default.removeItem(at: url)
-                                            completion(finalOutURL, nil)
-                                        } else {
-                                            await exportSession.export()
-                                            try? FileManager.default.removeItem(at: audioOutURL)
-                                            if exportSession.status == .completed || exportSession.status == .waiting {
-                                                try? FileManager.default.removeItem(at: url)
-                                                completion(finalOutURL, nil)
-                                            } else {
-                                                completion(nil, exportSession.error)
-                                            }
-                                        }
-                                        
-                                    } catch {
-                                        try? FileManager.default.removeItem(at: audioOutURL)
-                                        completion(nil, error)
-                                    }
-                                }
-                            }
-                            break
-                        }
+                    let compTrack = audioComp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    let timeRange = try await track.load(.timeRange)
+                    try compTrack?.insertTimeRange(timeRange, of: track, at: .zero)
+                    
+                    if let compTrack = compTrack {
+                        let param = AVMutableAudioMixInputParameters(track: compTrack)
+                        param.setVolume(1.0, at: .zero)
+                        inputParameters.append(param)
                     }
                 }
+                
+                let audioMix = AVMutableAudioMix()
+                audioMix.inputParameters = inputParameters
+                
+                let tempAudioURL = url.deletingLastPathComponent().appendingPathComponent("temp_audio_\(UUID().uuidString).m4a")
+                if FileManager.default.fileExists(atPath: tempAudioURL.path) {
+                    try FileManager.default.removeItem(at: tempAudioURL)
+                }
+                
+                guard let audioExport = AVAssetExportSession(asset: audioComp, presetName: AVAssetExportPresetAppleM4A) else {
+                    throw NSError(domain: "Mix", code: 1, userInfo: nil)
+                }
+                audioExport.outputURL = tempAudioURL
+                audioExport.outputFileType = .m4a
+                audioExport.audioMix = audioMix
+                
+                if #available(iOS 18.0, *) {
+                    try await audioExport.export(to: tempAudioURL, as: .m4a)
+                } else {
+                    await audioExport.export()
+                    if audioExport.status != .completed {
+                        throw audioExport.error ?? NSError(domain: "Mix", code: 2, userInfo: nil)
+                    }
+                }
+                
+                // Step 2: Mux the original video with the new mixed audio
+                let mixedAudioAsset = AVURLAsset(url: tempAudioURL)
+                guard let mixedAudioTrack = try await mixedAudioAsset.loadTracks(withMediaType: .audio).first else {
+                    throw NSError(domain: "Mix", code: 3, userInfo: nil)
+                }
+                
+                let finalComp = AVMutableComposition()
+                
+                if let videoTrack = try await asset.loadTracks(withMediaType: .video).first {
+                    let compVideo = finalComp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    let timeRange = try await videoTrack.load(.timeRange)
+                    try compVideo?.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+                    
+                    let compAudio = finalComp.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    let audioTimeRange = try await mixedAudioTrack.load(.timeRange)
+                    // Ensure audio matches video duration exactly to prevent trailing silence
+                    let finalAudioDuration = min(timeRange.duration, audioTimeRange.duration)
+                    let finalAudioRange = CMTimeRange(start: .zero, duration: finalAudioDuration)
+                    try compAudio?.insertTimeRange(finalAudioRange, of: mixedAudioTrack, at: .zero)
+                }
+                
+                let finalOutURL = url.deletingLastPathComponent().appendingPathComponent("mixed_" + url.lastPathComponent)
+                if FileManager.default.fileExists(atPath: finalOutURL.path) {
+                    try FileManager.default.removeItem(at: finalOutURL)
+                }
+                
+                guard let finalExport = AVAssetExportSession(asset: finalComp, presetName: AVAssetExportPresetPassthrough) else {
+                    throw NSError(domain: "Export", code: 4, userInfo: nil)
+                }
+                finalExport.outputURL = finalOutURL
+                finalExport.outputFileType = .mp4
+                finalExport.shouldOptimizeForNetworkUse = true
+                
+                if #available(iOS 18.0, *) {
+                    try await finalExport.export(to: finalOutURL, as: .mp4)
+                } else {
+                    await finalExport.export()
+                    if finalExport.status != .completed {
+                        throw finalExport.error ?? NSError(domain: "Export", code: 5, userInfo: nil)
+                    }
+                }
+                
+                try? FileManager.default.removeItem(at: tempAudioURL)
+                try? FileManager.default.removeItem(at: url)
+                completion(finalOutURL, nil)
+                
             } catch {
                 completion(nil, error)
             }

@@ -4,7 +4,9 @@
 <dict>
     <key>method</key>
     <string>development</string>
-    <key>teamID</key>
-    <string>F4TFHKUQDA</string>
+    <key>compileBitcode</key>
+    <false/>
+    <key>stripSwiftSymbols</key>
+    <true/>
 </dict>
 </plist>
