@@ -8,7 +8,6 @@ class AppState: ObservableObject {
     @Published var isStudioLightEnabled: Bool = false
     @Published var cameraPosition: AVCaptureDevice.Position = .front
     @Published var cameraResolution: CameraResolution = .hd1080p
-    @Published var recordingResolution: RecordingResolution = .uhd4K
     @Published var recordingFPS: RecordingFPS = .fps60
     
     @Published var isRecording: Bool = false
@@ -25,10 +24,20 @@ class AppState: ObservableObject {
         }
     }
     
+    @Published var recordingResolution: RecordingResolution = .uhd4K {
+        didSet {
+            let sharedDefaults = UserDefaults(suiteName: AppGroupHelper.appGroupID)
+            sharedDefaults?.set(recordingResolution.rawValue, forKey: "recordingResolution")
+        }
+    }
+    
     init() {
         let sharedDefaults = UserDefaults(suiteName: AppGroupHelper.appGroupID)
         let savedAudio = sharedDefaults?.string(forKey: "audioSource") ?? AudioSource.micAudio.rawValue
         self.audioSource = AudioSource(rawValue: savedAudio) ?? .micAudio
+        
+        let savedResolution = sharedDefaults?.string(forKey: "recordingResolution") ?? RecordingResolution.uhd4K.rawValue
+        self.recordingResolution = RecordingResolution(rawValue: savedResolution) ?? .uhd4K
     }
     
     enum AudioSource: String, CaseIterable, Identifiable {

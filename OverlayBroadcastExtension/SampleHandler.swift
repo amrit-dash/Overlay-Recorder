@@ -5,6 +5,7 @@ class SampleHandler: RPBroadcastSampleHandler {
     
     private var assetWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
+    private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var audioAppInput: AVAssetWriterInput?
     private var audioMicInput: AVAssetWriterInput?
     
@@ -113,7 +114,12 @@ class SampleHandler: RPBroadcastSampleHandler {
                 isWriterStarted = true
             }
             if let videoInput = videoInput, videoInput.isReadyForMoreMediaData {
-                videoInput.append(sampleBuffer)
+                if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer), let adaptor = videoAdaptor {
+                    let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                    adaptor.append(pixelBuffer, withPresentationTime: pts)
+                } else {
+                    videoInput.append(sampleBuffer)
+                }
             }
         case .audioApp:
             if isWriterStarted {
@@ -139,8 +145,27 @@ class SampleHandler: RPBroadcastSampleHandler {
     private func setupVideoInput(sampleBuffer: CMSampleBuffer) {
         guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
-        var width = Int(dimensions.width)
-        var height = Int(dimensions.height)
+        let originalWidth = Int(dimensions.width)
+        let originalHeight = Int(dimensions.height)
+        
+        let groupID = AppGroupHelper.appGroupID
+        let sharedDefaults = UserDefaults(suiteName: groupID)
+        let resolutionString = sharedDefaults?.string(forKey: "recordingResolution") ?? "4K"
+        
+        let targetMax: CGFloat
+        switch resolutionString {
+        case "720p": targetMax = 1280
+        case "1080p": targetMax = 1920
+        case "4K": targetMax = 3840
+        default: targetMax = 3840
+        }
+        
+        let maxDim = max(originalWidth, originalHeight)
+        let scaleFactor = targetMax / CGFloat(maxDim)
+        
+        var width = Int(CGFloat(originalWidth) * scaleFactor)
+        var height = Int(CGFloat(originalHeight) * scaleFactor)
+        
         width = width % 2 == 0 ? width : width + 1
         height = height % 2 == 0 ? height : height + 1
         
@@ -172,8 +197,15 @@ class SampleHandler: RPBroadcastSampleHandler {
         
         if let vi = videoInput, assetWriter!.canAdd(vi) {
             assetWriter!.add(vi)
+            let sourceAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height
+            ]
+            videoAdaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: vi, sourcePixelBufferAttributes: sourceAttributes)
         } else {
             videoInput = nil
+            videoAdaptor = nil
         }
     }
     

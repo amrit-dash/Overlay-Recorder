@@ -1,7 +1,9 @@
 import SwiftUI
 import Photos
 import AVKit
+#if canImport(UIKit)
 import UIKit
+#endif
 
 struct LibraryView: View {
     @Binding var selection: AppScreen?
@@ -324,7 +326,7 @@ struct VideoDetailView: View {
     private func saveToGallery() {
         isSaving = true
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
-            guard status == .authorized else {
+            guard status == .authorized || status == .limited else {
                 DispatchQueue.main.async {
                     self.saveMessage = "Permission Denied"
                     self.isSaving = false
@@ -333,31 +335,61 @@ struct VideoDetailView: View {
                 return
             }
             
+            let albumName = "Aradhi's Classroom"
+            var assetCollectionPlaceholder: PHObjectPlaceholder?
+            var albumCollection: PHAssetCollection?
+            
+            let fetchOptions = PHFetchOptions()
+            fetchOptions.predicate = NSPredicate(format: "title = %@", albumName)
+            let collection = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: fetchOptions)
+            
+            if let existingAlbum = collection.firstObject {
+                albumCollection = existingAlbum
+            }
+            
             PHPhotoLibrary.shared().performChanges({
-                let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
-                guard let placeholder = assetChangeRequest?.placeholderForCreatedAsset else { return }
-                
-                let albumName = "Aradhi's Classroom"
-                let fetchOptions = PHFetchOptions()
-                fetchOptions.predicate = NSPredicate(format: "title = %@", albumName)
-                let collection = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any, options: fetchOptions)
-                
-                if let existingAlbum = collection.firstObject {
-                    let albumChangeRequest = PHAssetCollectionChangeRequest(for: existingAlbum)
-                    albumChangeRequest?.addAssets([placeholder] as NSArray)
-                } else {
+                if albumCollection == nil {
                     let createAlbumRequest = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: albumName)
-                    createAlbumRequest.addAssets([placeholder] as NSArray)
+                    assetCollectionPlaceholder = createAlbumRequest.placeholderForCreatedAssetCollection
                 }
             }) { success, error in
-                DispatchQueue.main.async {
-                    self.isSaving = false
-                    if success {
-                        self.saveMessage = "Saved to Gallery!"
-                    } else {
-                        self.saveMessage = "Failed to save"
+                if success || albumCollection != nil {
+                    if let placeholder = assetCollectionPlaceholder {
+                        let fetchResult = PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [placeholder.localIdentifier], options: nil)
+                        albumCollection = fetchResult.firstObject
                     }
-                    self.clearMessage()
+                    
+                    if let album = albumCollection {
+                        PHPhotoLibrary.shared().performChanges({
+                            let assetChangeRequest = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                            if let placeholder = assetChangeRequest?.placeholderForCreatedAsset {
+                                let albumChangeRequest = PHAssetCollectionChangeRequest(for: album)
+                                albumChangeRequest?.addAssets([placeholder] as NSArray)
+                            }
+                        }) { success2, error2 in
+                            DispatchQueue.main.async {
+                                self.isSaving = false
+                                if success2 {
+                                    self.saveMessage = "Saved to Gallery!"
+                                } else {
+                                    self.saveMessage = "Failed to save: \(error2?.localizedDescription ?? "Unknown error")"
+                                }
+                                self.clearMessage()
+                            }
+                        }
+                    } else {
+                        DispatchQueue.main.async {
+                            self.isSaving = false
+                            self.saveMessage = "Failed to find album"
+                            self.clearMessage()
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        self.isSaving = false
+                        self.saveMessage = "Failed to create album: \(error?.localizedDescription ?? "Unknown")"
+                        self.clearMessage()
+                    }
                 }
             }
         }
@@ -386,6 +418,20 @@ struct CustomVideoTrimmer: View {
     @State private var timeObserverToken: Any?
     @State private var thumbnails: [UIImage] = []
     
+    private var screenHeight: CGFloat {
+        #if os(iOS)
+        if let windowScene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+            return windowScene.screen.bounds.height
+        }
+        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            return windowScene.screen.bounds.height
+        }
+        return 800
+        #else
+        return 800
+        #endif
+    }
+    
     var body: some View {
         NavigationView {
             ZStack {
@@ -396,12 +442,12 @@ struct CustomVideoTrimmer: View {
                     if let player = player {
                         VideoPlayer(player: player)
                             .aspectRatio(contentMode: .fit)
-                            .frame(maxWidth: .infinity, maxHeight: UIScreen.main.bounds.height * 0.45)
+                            .frame(maxWidth: .infinity, maxHeight: screenHeight * 0.45)
                             .background(Color.black)
                     } else {
                         Rectangle()
                             .fill(Color.black)
-                            .frame(maxWidth: .infinity, maxHeight: UIScreen.main.bounds.height * 0.45)
+                            .frame(maxWidth: .infinity, maxHeight: screenHeight * 0.45)
                             .overlay(ProgressView().tint(.white))
                     }
                     
